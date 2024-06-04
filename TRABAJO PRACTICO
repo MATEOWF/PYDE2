@@ -1,0 +1,208 @@
+********************************************************************************
+* UDLA *************************************************************************
+* FACEA ************************************************************************
+* Econometria II ***************************************************************
+* Modelos Univariados de Series de Tiempo **************************************
+* Paul Carrillo-Maldonado ******************************************************
+********************************************************************************
+
+cd "C:\Users\pacar\OneDrive - Universidad de Las Américas\CLASES\2024 02\Econometria II\Talleres"
+
+*log using "taller4.smcl", replace
+*Set up 
+clear all
+set more off
+
+*Ingreso de data
+import excel "F104_ventas.xlsx", sheet("Sheet 1") firstrow
+
+*Formato de serie de tiempo mensual
+gen time = tm(2011m1) + _n - 1
+format time %tm
+tsset time
+
+* Variables deterministicas
+gen trend = _n
+tab MESFISCAL, gen(mes)
+
+* Variable dependiente
+rename TOTALVENTASYEXPORTACIONES41 ventas
+
+*Cambio de escala y log
+gen ventas_ln = log(ventas)
+
+
+*Grafico
+twoway (tsline ventas) (tsline ventas_ln, yaxis(2)), ///
+	ytitle("Dolares") ytitle("Ln", axis(2)) ytitle(, orientation(rvertical) axis(2)) ///
+	xtitle("") xlabel(#25, angle(vertical)) ///
+	legend(on order(1 "Ventas (USD)" 2 "Ventas (Ln)") position(6) row(1)) name(ventas, replace) 
+
+	
+
+*Estacionalidad
+*Sin Estacionalidad
+reg ventas_ln mes1-mes11 if tin(,2019m12)
+reg ventas_ln mes1-mes11 
+
+reg ventas_ln mes1-mes11 
+gen ventas_ss = ventas_ln - _b[mes1]*mes1 - _b[mes4]*mes4  - _b[mes5]*mes5 - _b[mes9]*mes9
+
+
+
+twoway (tsline ventas_ln) (tsline ventas_ss, yaxis(2)), ///
+	ytitle("") ytitle("", axis(2)) ytitle(, orientation(rvertical) axis(2)) ///
+	xtitle("") xlabel(#25, angle(vertical)) ///
+	legend(on order(1 "En log" 2 "Con ajuste estacional") position(6) row(1)) name(ventas_ss, replace) 
+
+twoway (tsline ventas_ss) (lfit ventas_ss time if tin(2017m1,2019m12))
+
+*Modelo ARIMA(p,d,q)
+*Test de estacionariedad
+*Dickey-Fuller
+dfuller ventas_ss, noconstant 
+dfuller ventas_ss 
+dfuller ventas_ss, trend 
+
+*Aumentado
+dfuller ventas_ss, lag(1)
+dfuller ventas_ss, lag(2)
+dfuller ventas_ss, lag(3)
+
+*DF-GLS (Elliott, Rothenberg, and Stock, 1996)
+dfgls ventas_ss, notrend
+dfuller ventas_ss, lags(13)  /*Ng–Perron seq t*/
+
+dfgls ventas_ss, 
+dfuller ventas_ss, lags(13) trend  /*Ng–Perron seq t*/
+
+
+clemio2 ventas_ss, graph
+clemao2 ventas_ss, graph
+
+*d=1
+cap drop ventas_dln 
+gen ventas_dln = D.ventas_ss
+tsline ventas_dln 
+
+dfuller ventas_dln, noconstant
+dfuller ventas_dln 
+dfgls ventas_dln 
+
+
+
+*Seleccion de P y Q
+/*Funcion de autocorrelacion parcial*/
+pac ventas_dln, xlabel(#48, angle(vertical)) name(pac, replace)	
+/*Funcion de autocorrelacion*/
+ac ventas_dln, xlabel(#48, angle(vertical)) name(ac, replace)
+corrgram ventas_dln /*Conjunto*/
+
+pac D.ventas_ln , xlabel(#48, angle(vertical)) 
+ac D.ventas_ln , xlabel(#48, angle(vertical)) 
+
+
+* Criteria information: Akaike, Hannan-Quinn y Schwarz
+varsoc ventas_dln, maxlag(36) noconstant
+varsoc ventas_dln, maxlag(24) noconstant
+varsoc ventas_dln, maxlag(12) noconstant
+
+* According to Schwert (1989): see dfgls
+global maxlag = floor(12*((_N+1)/100)^(0.25)) 
+varsoc ventas_dln, maxlag($maxlag) noconstant
+
+*Estimacion del modelo ARIMA(p=3,d=1,q=0)
+eststo ols1: reg ventas_dln L1.ventas_dln L2.ventas_dln, noconstant
+eststo ols2: reg ventas_dln L(1/13).ventas_dln, noconstant
+eststo ols3: reg ventas_dln L(2).ventas_dln L(11).ventas_dln L(12).ventas_dln L(13).ventas_dln, noconstant
+
+eststo ml1: arima ventas_ss, arima(2,1,0) noconstant
+eststo ml2: arima ventas_dln, arima(2,0,0) noconstant
+eststo ml3: arima ventas_dln, ar(2 11 12 13) noconstant 
+eststo ml4: arima ventas_dln, ar(2 11 12 13) ma(2 11 12) noconstant 
+eststo ml5: arima ventas_ss, arima(2,1,2) sarima(1,0,1,12)  noconstant 
+
+
+esttab ols* ml*, b(3) ci(3) sfmt(3) label star(* 0.10 ** 0.05 *** 0.01) 
+
+reg ventas_dln L(1/2).ventas_dln , noconstant
+predict res_ar3 if e(sample), residuals
+gen res2_ar3 = res_ar3*res_ar3
+summ res2_ar3
+*di `r(mean)'
+di "RMSE:" sqrt(`r(mean)')
+*gen rmse_ar2 = sqrt(`r(mean)')
+
+* Algoritmo de Hannan–Rissanen
+forvalues q = 1/12 {
+cap drop res_arima res2_arima
+cap arima ventas_dln, arima(2,1,`q') noconstant
+cap estat ic
+cap mat IC = r(S)
+cap predict res_arima if e(sample), residuals
+cap gen res2_arima = res_arima*res_arima
+cap summ res2_arima
+di `q' ": MSE" `r(mean)' "; AIC" IC[1,5] "; SBIC" IC[1,5]
+}
+
+
+// reg ventas_dln L(1/2).ventas_dln , noconstant
+// predict residuals if e(sample), residuals
+
+*Test de diagnostico
+cap drop residuals ventas_hat	
+arima ventas_ss if tin(,2022m12), arima(13,1,1) noconstant
+predict residuals if tin(,2022m12), residuals
+predict ventas_hat if tin(,2022m12), y
+
+tsline ventas_ss ventas_hat 
+
+*Autocorrelacion de los errores
+*Ruido Blanco
+wntestq residuals
+wntestq residuals, lags(12)
+wntestq residuals, lags(24)
+
+*Test Breusch–Godfrey
+reg ventas_dln L(1/13).ventas_dln if tin(,2022m12), noconstant
+estat bgodfrey, lags(1/12)
+reg residuals L(1/12).residuals if tin(,2022m12), noconstant
+
+pac residuals
+tsline residuals
+
+*Normalidad de los errores 
+sktest residuals
+swilk residuals
+sfrancia residuals
+histogram residuals, normal
+pnorm residuals
+qnorm residuals
+
+tsline residuals 
+
+*ARCH efecto
+reg ventas_dln L(1/13).ventas_dln if tin(,2022m12), noconstant
+estat archlm 
+estat archlm, lags(1/24)
+gen residuals2 = residuals*residuals
+reg residuals2 L(1/24).residuals2 if tin(,2022m12), 
+
+*Estabilidad e invertibilidad
+arima ventas_ss if tin(,2022m12), arima(13,1,2) noconstant
+estat aroots
+
+
+*Prevision
+arima ventas_ss if tin(,2022m12), arima(13,1,2) noconstant
+predict ventas_static if tin(,2023m12), y
+predict ventas_dynamic if tin(,2023m12), y dynamic(tm(2022m12))
+predict ventas_forecast if tin(,2023m12), y dynamic(tm(2022m1))
+
+
+twoway (tsline ventas_ss) (tsline ventas_static ventas_dynamic ventas_forecast, yaxis(2)) if tin(2021m1,2023m12), ytitle("") ytitle("", axis(2)) ytitle(, orientation(rvertical) axis(2)) xtitle("") xlabel(#19, angle(vertical)) legend(on order(1 "ventas" 2 "Estatico" 3 "Dinamico 2023" 4 "Dinamico 2022")) name(ventas_prevision, replace)
+
+
+
+
+*log close
